@@ -1,0 +1,34 @@
+# Token do bot (Discord Developer Portal > Bot > Reset Token)
+DISCORD_TOKEN=
+
+# IDs dos 3 servidores (ative o Modo Desenvolvedor no Discord e clique
+# com botão direito no servidor > "Copiar ID do Servidor")
+GUILD_ID_PRINCIPAL=
+GUILD_ID_SGEX=
+GUILD_ID_DECEX=
+
+# ID do canal de fórum "ficha-militar" dentro do SGEx
+CHANNEL_ID_FICHAS=
+
+# ID do canal de fórum "formados-cursos" dentro do Decex
+CHANNEL_ID_FORMACOES=
+
+# IDs de fóruns ADICIONAIS de formação (estágios, academias etc.),
+# separados por vírgula. Deixe em branco se só tiver o de cima.
+CHANNEL_IDS_FORMACOES_EXTRA=
+
+# Caminho do arquivo do banco SQLite (deixe assim se não souber o que mudar)
+DATABASE_PATH=ficha_militar.db
+
+# Lista de patentes em ordem de menor pra maior, separadas por vírgula.
+# Precisa bater EXATAMENTE com o nome do cargo no Discord.
+# A primeira da lista é considerada a "data de entrada oficial" quando atribuída.
+PATENTES=Recruta,Soldado,Cabo,Terceiro-Sargento,Segundo-Sargento,Primeiro-Sargento,Subtenente,Aspirante,Segundo-Tenente,Primeiro-Tenente,Capitão,Major,Tenente-Coronel,Coronel,General de Brigada,General de Divisão,General de Exército,Comandante do Exército
+
+# OPCIONAL — preencha se quiser que o bot preencha sozinho as
+# Organizações Militares e Honrarias na ficha, lendo os cargos atuais do
+# membro no servidor Principal (igual já faz com PATENTES). Precisa bater
+# EXATAMENTE com o nome do cargo no Discord. Se deixar em branco, esses
+# dois campos continuam só manuais via /ficha atualizar — nada quebra.
+ORGANIZACOES=
+HONRARIAS=
