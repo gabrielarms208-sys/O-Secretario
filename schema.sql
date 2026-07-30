@@ -25,6 +25,8 @@ CREATE TABLE IF NOT EXISTS fichas (
     organizacoes          TEXT,               -- lista simples (JSON ou separado por ;) das OMs
     honrarias              TEXT,               -- lista simples ("Medalhas" na ficha), separadas por ;
     feitos                 TEXT,               -- lista de feitos/carreira ("Feitos" na ficha), separadas por ;
+    thread_id              BIGINT,             -- thread no fórum de fichas onde o /ficha criar postou (evita duplicar)
+    thread_message_id      BIGINT,             -- mensagem dentro dessa thread, pra poder editar depois
     fonte_import          TEXT,               -- 'manual' ou 'importado-forum' (rastreio de origem)
     ficha_completa         BOOLEAN DEFAULT 1,  -- false = importada faltando campos, precisa revisão
     atualizado_em          TIMESTAMP DEFAULT CURRENT_TIMESTAMP

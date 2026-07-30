@@ -98,6 +98,14 @@ async def _migrar_schema(db: aiosqlite.Connection):
     colunas = {row[1] for row in await cur.fetchall()}
     if "feitos" not in colunas:
         await db.execute("ALTER TABLE fichas ADD COLUMN feitos TEXT")
+    if "thread_id" not in colunas:
+        # guarda a thread do fórum de fichas onde o `/ficha criar` postou/
+        # atualizou essa ficha, pra saber se já existe uma e só editar em
+        # vez de criar uma thread duplicada da próxima vez
+        await db.execute("ALTER TABLE fichas ADD COLUMN thread_id BIGINT")
+    if "thread_message_id" not in colunas:
+        await db.execute("ALTER TABLE fichas ADD COLUMN thread_message_id BIGINT")
+
 
 
 # ---------- Militares ----------
@@ -180,6 +188,18 @@ async def buscar_ficha(militar_id: int):
         db.row_factory = aiosqlite.Row
         cur = await db.execute("SELECT * FROM fichas WHERE militar_id = ?", (militar_id,))
         return await cur.fetchone()
+
+
+async def salvar_thread_ficha(militar_id: int, thread_id: int, message_id: int):
+    """Guarda em qual thread do fórum de fichas o `/ficha criar` postou/
+    atualizou essa ficha — assim, da próxima vez, o bot edita o post
+    existente em vez de criar uma thread duplicada."""
+    async with aiosqlite.connect(config.DATABASE_PATH) as db:
+        await db.execute(
+            "UPDATE fichas SET thread_id = ?, thread_message_id = ? WHERE militar_id = ?",
+            (thread_id, message_id, militar_id),
+        )
+        await db.commit()
 
 
 # ---------- Histórico de promoções ----------
