@@ -36,6 +36,48 @@ async def militar_autocomplete(interaction: discord.Interaction, current: str):
     return [app_commands.Choice(name=n, value=n) for n in nomes]
 
 
+def _montar_embed_ficha_para_forum(roblox_username: str, ficha) -> discord.Embed:
+    """Monta o embed que o `/ficha criar` posta no fórum de fichas — no
+    MESMO formato de texto que `import_parser.parse_ficha` já sabe ler
+    (headers em texto puro + linhas "▷Campo: valor;"), pra que uma futura
+    reimportação (`/ficha importar`) continue funcionando normalmente
+    com esse post gerado automaticamente."""
+    linhas = ["Dados de Identificação"]
+    linhas.append(f"▷Posto: {ficha['posto'] or '—'};")
+    linhas.append(f"▷Data de entrada: {_formatar_data_br(ficha['data_entrada'])};")
+    linhas.append(f"▷Última data de promoção: {_formatar_data_br(ficha['ultima_promocao'])}.")
+
+    if ficha["organizacoes"]:
+        linhas.append("Organizações Militares")
+        orgs = [o.strip() for o in ficha["organizacoes"].split(";") if o.strip()]
+        for o in orgs[:-1]:
+            linhas.append(f"▷{o};")
+        if orgs:
+            linhas.append(f"▷{orgs[-1]}.")
+
+    linhas.append("Dados Funcionais")
+    linhas.append(f"▷Situação Atual: {ficha['situacao'] or 'Ativa'}.")
+    linhas.append(f"▷Arma: {ficha['arma'] or '—'}.")
+
+    if ficha["feitos"]:
+        linhas.append("Feitos")
+        feitos = [f.strip() for f in ficha["feitos"].split(";") if f.strip()]
+        for f in feitos[:-1]:
+            linhas.append(f"▷{f};")
+        if feitos:
+            linhas.append(f"▷{feitos[-1]}.")
+
+    if ficha["honrarias"]:
+        linhas.append("Medalhas")
+        medalhas = [m.strip() for m in ficha["honrarias"].split(";") if m.strip()]
+        for m in medalhas[:-1]:
+            linhas.append(f"▷{m};")
+        if medalhas:
+            linhas.append(f"▷{medalhas[-1]}.")
+
+    return discord.Embed(title=roblox_username, description="\n".join(linhas))
+
+
 class VerTodasFormacoesView(discord.ui.View):
     """Botão que aparece no `/ficha ver` quando o militar tem mais
     formações do que cabe no embed principal — abre a lista completa numa
@@ -243,6 +285,89 @@ class Ficha(commands.Cog):
         await interaction.response.send_message(
             f"`{roblox_username}` sincronizado a partir dos cargos atuais: **{campos['posto']}**. ✅"
         )
+
+    @ficha_group.command(
+        name="criar",
+        description="[Admin] Gera a ficha a partir dos cargos atuais e posta/atualiza no fórum de fichas",
+    )
+    @app_commands.describe(membro="O membro no servidor (menção @)")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def criar(self, interaction: discord.Interaction, membro: discord.Member):
+        if membro.guild.id != config.GUILD_ID_PRINCIPAL:
+            await interaction.response.send_message(
+                "Esse comando só funciona rodado no servidor Principal.", ephemeral=True
+            )
+            return
+
+        await interaction.response.defer(thinking=True)
+
+        roblox_username = membro.display_name.strip()
+        cargos = {r.name for r in membro.roles}
+        campos = roles_sync.montar_campos_ficha(cargos)
+
+        if not campos.get("posto"):
+            await interaction.followup.send(
+                f"{membro.mention} não tem nenhum cargo de patente reconhecido (configurado em `PATENTES`) — "
+                f"nada pra gerar."
+            )
+            return
+
+        militar = await db.buscar_militar_por_username(roblox_username)
+        if militar:
+            militar_id = militar["id"]
+        else:
+            roblox_id = await roblox_api.resolver_id(roblox_username)
+            militar_id = await db.upsert_militar(roblox_id=roblox_id, roblox_username=roblox_username, discord_id=membro.id)
+
+        await db.upsert_ficha(militar_id, campos)
+        ficha = await db.buscar_ficha(militar_id)
+
+        canal = self.bot.get_channel(config.CHANNEL_ID_FICHAS)
+        if canal is None:
+            await interaction.followup.send(
+                f"Ficha de `{roblox_username}` salva no banco (Posto: **{campos['posto']}**), mas não encontrei "
+                f"o canal de fichas configurado (CHANNEL_ID_FICHAS) pra postar/atualizar a thread — ID errado "
+                f"ou o bot não tem permissão de Ver Canal nele."
+            )
+            return
+
+        embed = _montar_embed_ficha_para_forum(roblox_username, ficha)
+
+        # se já tiver uma thread salva de uma vez anterior, tenta reaproveitar
+        # (edita o post existente) em vez de criar uma duplicada
+        thread_existente = None
+        if ficha["thread_id"]:
+            thread_existente = self.bot.get_channel(ficha["thread_id"])
+            if thread_existente is None:
+                try:
+                    thread_existente = await membro.guild.fetch_channel(ficha["thread_id"])
+                except (discord.NotFound, discord.Forbidden):
+                    thread_existente = None
+
+        mensagem_existente = None
+        if thread_existente is not None:
+            try:
+                mensagem_existente = await thread_existente.fetch_message(ficha["thread_message_id"])
+            except (discord.NotFound, discord.Forbidden):
+                mensagem_existente = None
+
+        if thread_existente is not None and mensagem_existente is not None:
+            await mensagem_existente.edit(embed=embed)
+            if thread_existente.name != roblox_username:
+                try:
+                    await thread_existente.edit(name=roblox_username)
+                except discord.HTTPException:
+                    pass
+            await db.salvar_thread_ficha(militar_id, thread_existente.id, mensagem_existente.id)
+            await interaction.followup.send(
+                f"Ficha de `{roblox_username}` **atualizada** na thread existente: {thread_existente.jump_url} ✅"
+            )
+        else:
+            resultado = await canal.create_thread(name=roblox_username, embed=embed)
+            await db.salvar_thread_ficha(militar_id, resultado.thread.id, resultado.message.id)
+            await interaction.followup.send(
+                f"Ficha de `{roblox_username}` **criada** numa thread nova: {resultado.thread.jump_url} ✅"
+            )
 
     @ficha_group.command(name="sincronizar_todos", description="[Admin] Puxa posto/OM/honrarias de TODO MUNDO no servidor Principal a partir dos cargos atuais")
     @app_commands.checks.has_permissions(administrator=True)
