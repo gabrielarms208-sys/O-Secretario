@@ -266,50 +266,68 @@ class Formacoes(commands.Cog):
         total, avisos = 0, []
         contagem_por_canal: dict[int, int] = {}
         sem_texto_extraivel = 0
+        threads_com_multiplas_msgs = []
 
         async def processa_thread(thread: discord.Thread, canal_id: int):
             nonlocal total, sem_texto_extraivel
             nome_curso = thread.name.strip()
-            async for msg in thread.history(limit=None, oldest_first=True):
-                texto = _extrair_texto_mensagem(msg)
-                if not texto:
-                    sem_texto_extraivel += 1
-                    continue
-                registros = parse_formados(texto, nome_curso_padrao=nome_curso)
-                if not registros:
-                    continue
 
-                # resolve os usernames que ainda não existem no banco em UM
-                # lote só (mais rápido e mais gentil com a API do Roblox do
-                # que resolver um por um)
-                a_resolver = []
-                for r in registros:
-                    if not await db.buscar_militar_por_username(r["username"]):
-                        a_resolver.append(r["username"])
-                ids_resolvidos = await roblox_api.resolver_ids(a_resolver) if a_resolver else {}
+            # Toda vez que uma edição nova forma, a ficha INTEIRA da thread é
+            # repostada como mensagem nova (em vez de editar a mensagem
+            # anterior) — cada repost já contém o consolidado de tudo até
+            # ali. Processar TODAS as mensagens do histórico (como era feito
+            # antes) reprocessava o mesmo militar uma vez por repost, e como
+            # o texto de cada repost pode variar levemente na formatação do
+            # cabeçalho de edição, isso criava edições "novas" duplicadas
+            # pra quem já tinha sido importado num repost anterior. Corrigido:
+            # só a mensagem MAIS RECENTE é lida — ela já é o consolidado
+            # atual, as anteriores estão superadas por ela.
+            mensagens = [msg async for msg in thread.history(limit=None, oldest_first=True)]
+            if not mensagens:
+                return
+            if len(mensagens) > 1:
+                threads_com_multiplas_msgs.append(thread.name)
+            ultima_msg = mensagens[-1]
 
-                for r in registros:
-                    militar = await db.buscar_militar_por_username(r["username"])
-                    if not militar:
-                        roblox_id = ids_resolvidos.get(r["username"])
-                        militar_id = await db.upsert_militar(roblox_id=roblox_id, roblox_username=r["username"])
-                    else:
-                        militar_id = militar["id"]
+            texto = _extrair_texto_mensagem(ultima_msg)
+            if not texto:
+                sem_texto_extraivel += 1
+                return
+            registros = parse_formados(texto, nome_curso_padrao=nome_curso)
+            if not registros:
+                return
 
-                    curso_id = await db.get_ou_criar_curso(r["curso"], estrito=True)
-                    edicao_id = await db.get_ou_criar_edicao(curso_id, r["edicao"], r["edicao_apelido"])
+            # resolve os usernames que ainda não existem no banco em UM
+            # lote só (mais rápido e mais gentil com a API do Roblox do
+            # que resolver um por um)
+            a_resolver = []
+            for r in registros:
+                if not await db.buscar_militar_por_username(r["username"]):
+                    a_resolver.append(r["username"])
+            ids_resolvidos = await roblox_api.resolver_ids(a_resolver) if a_resolver else {}
 
-                    if r["cassado"]:
-                        formacao_id = await db.adicionar_formacao(
-                            militar_id, curso_id, edicao_id, r["numero_sequencial"], date.today(), "importado-forum"
-                        )
-                        await db.cassar_formacao(formacao_id, date.today())
-                    else:
-                        await db.adicionar_formacao(
-                            militar_id, curso_id, edicao_id, r["numero_sequencial"], date.today(), "importado-forum"
-                        )
-                    total += 1
-                    contagem_por_canal[canal_id] = contagem_por_canal.get(canal_id, 0) + 1
+            for r in registros:
+                militar = await db.buscar_militar_por_username(r["username"])
+                if not militar:
+                    roblox_id = ids_resolvidos.get(r["username"])
+                    militar_id = await db.upsert_militar(roblox_id=roblox_id, roblox_username=r["username"])
+                else:
+                    militar_id = militar["id"]
+
+                curso_id = await db.get_ou_criar_curso(r["curso"], estrito=True)
+                edicao_id = await db.get_ou_criar_edicao(curso_id, r["edicao"], r["edicao_apelido"])
+
+                if r["cassado"]:
+                    formacao_id = await db.adicionar_formacao(
+                        militar_id, curso_id, edicao_id, r["numero_sequencial"], date.today(), "importado-forum"
+                    )
+                    await db.cassar_formacao(formacao_id, date.today())
+                else:
+                    await db.adicionar_formacao(
+                        militar_id, curso_id, edicao_id, r["numero_sequencial"], date.today(), "importado-forum"
+                    )
+                total += 1
+                contagem_por_canal[canal_id] = contagem_por_canal.get(canal_id, 0) + 1
 
         for canal in canais:
             threads_ativas = list(canal.threads)
@@ -340,6 +358,11 @@ class Formacoes(commands.Cog):
             mensagem += (
                 f"\n⚠️ {sem_texto_extraivel} mensagem(ns) sem texto nem embed legível (ex: só imagem/anexo) — "
                 f"ignorada(s)."
+            )
+        if threads_com_multiplas_msgs:
+            mensagem += (
+                f"\nℹ️ {len(threads_com_multiplas_msgs)} thread(s) tinham mais de uma mensagem (repost de ficha "
+                f"completa a cada edição nova) — só a mais recente de cada uma foi lida, como esperado."
             )
         mensagem += (
             f"\n⚠️ As datas exatas de formação não vieram no texto original, então foram gravadas com a data de hoje "
