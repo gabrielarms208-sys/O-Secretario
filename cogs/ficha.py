@@ -36,46 +36,70 @@ async def militar_autocomplete(interaction: discord.Interaction, current: str):
     return [app_commands.Choice(name=n, value=n) for n in nomes]
 
 
-def _montar_embed_ficha_para_forum(roblox_username: str, ficha) -> discord.Embed:
-    """Monta o embed que o `/ficha criar` posta no fórum de fichas — no
-    MESMO formato de texto que `import_parser.parse_ficha` já sabe ler
-    (headers em texto puro + linhas "▷Campo: valor;"), pra que uma futura
-    reimportação (`/ficha importar`) continue funcionando normalmente
-    com esse post gerado automaticamente."""
-    linhas = ["Dados de Identificação"]
-    linhas.append(f"▷Posto: {ficha['posto'] or '—'};")
-    linhas.append(f"▷Data de entrada: {_formatar_data_br(ficha['data_entrada'])};")
-    linhas.append(f"▷Última data de promoção: {_formatar_data_br(ficha['ultima_promocao'])}.")
+async def _montar_embed_ficha(militar, ficha) -> tuple[discord.Embed, list, bool]:
+    """Monta o embed "bonito" da ficha (emoji, cor por situação, thumbnail
+    do Roblox, campos) — usado tanto por `/ficha ver` quanto por
+    `/ficha criar`, pra que os dois fiquem sempre visualmente idênticos.
+    Retorna (embed, formações ativas, se deve mostrar o botão "ver todas")."""
+    situacao = ficha["situacao"] or "Ativa"
+    embed = discord.Embed(
+        title=f"🎖️  {militar['roblox_username']}",
+        description=f"### {ficha['posto'] or 'Sem posto definido'}",
+        color=_cor_por_situacao(situacao),
+    )
 
-    if ficha["organizacoes"]:
-        linhas.append("Organizações Militares")
-        orgs = [o.strip() for o in ficha["organizacoes"].split(";") if o.strip()]
-        for o in orgs[:-1]:
-            linhas.append(f"▷{o};")
-        if orgs:
-            linhas.append(f"▷{orgs[-1]}.")
+    if militar["roblox_id"]:
+        avatar = await roblox_api.avatar_headshot_url(militar["roblox_id"])
+        if avatar:
+            embed.set_thumbnail(url=avatar)
 
-    linhas.append("Dados Funcionais")
-    linhas.append(f"▷Situação Atual: {ficha['situacao'] or 'Ativa'}.")
-    linhas.append(f"▷Arma: {ficha['arma'] or '—'}.")
-
+    embed.add_field(name="📋 Situação", value=situacao, inline=True)
+    embed.add_field(name="⚔️ Arma", value=ficha["arma"] or "—", inline=True)
+    embed.add_field(name="\u200b", value="\u200b", inline=True)  # espaçador pra alinhar 3 colunas
+    embed.add_field(name="📅 Entrada", value=_formatar_data_br(ficha["data_entrada"]), inline=True)
+    embed.add_field(name="⭐ Última promoção", value=_formatar_data_br(ficha["ultima_promocao"]), inline=True)
+    embed.add_field(name="\u200b", value="\u200b", inline=True)
+    embed.add_field(
+        name="🏛️ Organizações Militares",
+        value=(ficha["organizacoes"] or "—").replace(";", "\n•").lstrip("•") or "—",
+        inline=False,
+    )
+    embed.add_field(
+        name="🏅 Honrarias",
+        value=(ficha["honrarias"] or "—").replace(";", "\n•").lstrip("•") or "—",
+        inline=False,
+    )
     if ficha["feitos"]:
-        linhas.append("Feitos")
-        feitos = [f.strip() for f in ficha["feitos"].split(";") if f.strip()]
-        for f in feitos[:-1]:
-            linhas.append(f"▷{f};")
-        if feitos:
-            linhas.append(f"▷{feitos[-1]}.")
+        embed.add_field(
+            name="📜 Feitos",
+            value=ficha["feitos"].replace(";", "\n•").lstrip("•"),
+            inline=False,
+        )
 
-    if ficha["honrarias"]:
-        linhas.append("Medalhas")
-        medalhas = [m.strip() for m in ficha["honrarias"].split(";") if m.strip()]
-        for m in medalhas[:-1]:
-            linhas.append(f"▷{m};")
-        if medalhas:
-            linhas.append(f"▷{medalhas[-1]}.")
+    formacoes = await db.formacoes_por_militar(militar["id"])
+    ativas = [f for f in formacoes if f["status"] == "ativo"]
+    mostrar_botao = False
+    if ativas:
+        LIMITE = 8
+        linhas = [f"• {f['curso_nome']} (Nº{f['numero_sequencial']})" for f in ativas[:LIMITE]]
+        if len(ativas) > LIMITE:
+            linhas.append(f"…e mais {len(ativas) - LIMITE}")
+            mostrar_botao = True
+        embed.add_field(name=f"🎓 Formações ({len(ativas)})", value="\n".join(linhas), inline=False)
+    else:
+        embed.add_field(name="🎓 Formações", value="Nenhuma formação registrada ainda.", inline=False)
 
-    return discord.Embed(title=roblox_username, description="\n".join(linhas))
+    # `ficha_completa` só é preenchido pelo importador de texto do fórum
+    # (0 = faltou campo, 1 = ok). Pra fichas geradas via `/ficha criar` ou
+    # `/ficha sincronizar` (a partir dos cargos), essa coluna nunca é
+    # escrita e fica None — nesse caso o aviso de "incompleta" não se
+    # aplica, então só mostramos quando o valor for explicitamente 0.
+    if ficha["ficha_completa"] == 0:
+        embed.set_footer(text="⚠️ Ficha importada incompleta — falta revisar alguns campos.")
+    else:
+        embed.set_footer(text="Vila Militar — Secretaria Geral do Exército")
+
+    return embed, ativas, mostrar_botao
 
 
 class VerTodasFormacoesView(discord.ui.View):
@@ -146,58 +170,7 @@ class Ficha(commands.Cog):
             )
             return
 
-        situacao = ficha["situacao"] or "Ativa"
-        embed = discord.Embed(
-            title=f"🎖️  {militar['roblox_username']}",
-            description=f"### {ficha['posto'] or 'Sem posto definido'}",
-            color=_cor_por_situacao(situacao),
-        )
-
-        if militar["roblox_id"]:
-            avatar = await roblox_api.avatar_headshot_url(militar["roblox_id"])
-            if avatar:
-                embed.set_thumbnail(url=avatar)
-
-        embed.add_field(name="📋 Situação", value=situacao, inline=True)
-        embed.add_field(name="⚔️ Arma", value=ficha["arma"] or "—", inline=True)
-        embed.add_field(name="\u200b", value="\u200b", inline=True)  # espaçador pra alinhar 3 colunas
-        embed.add_field(name="📅 Entrada", value=_formatar_data_br(ficha["data_entrada"]), inline=True)
-        embed.add_field(name="⭐ Última promoção", value=_formatar_data_br(ficha["ultima_promocao"]), inline=True)
-        embed.add_field(name="\u200b", value="\u200b", inline=True)
-        embed.add_field(
-            name="🏛️ Organizações Militares",
-            value=(ficha["organizacoes"] or "—").replace(";", "\n•").lstrip("•") or "—",
-            inline=False,
-        )
-        embed.add_field(
-            name="🏅 Honrarias",
-            value=(ficha["honrarias"] or "—").replace(";", "\n•").lstrip("•") or "—",
-            inline=False,
-        )
-        if ficha["feitos"]:
-            embed.add_field(
-                name="📜 Feitos",
-                value=ficha["feitos"].replace(";", "\n•").lstrip("•"),
-                inline=False,
-            )
-
-        formacoes = await db.formacoes_por_militar(militar["id"])
-        ativas = [f for f in formacoes if f["status"] == "ativo"]
-        mostrar_botao = False
-        if ativas:
-            LIMITE = 8
-            linhas = [f"• {f['curso_nome']} (Nº{f['numero_sequencial']})" for f in ativas[:LIMITE]]
-            if len(ativas) > LIMITE:
-                linhas.append(f"…e mais {len(ativas) - LIMITE}")
-                mostrar_botao = True
-            embed.add_field(name=f"🎓 Formações ({len(ativas)})", value="\n".join(linhas), inline=False)
-        else:
-            embed.add_field(name="🎓 Formações", value="Nenhuma formação registrada ainda.", inline=False)
-
-        if not ficha["ficha_completa"]:
-            embed.set_footer(text="⚠️ Ficha importada incompleta — falta revisar alguns campos.")
-        else:
-            embed.set_footer(text="Vila Militar — Secretaria Geral do Exército")
+        embed, ativas, mostrar_botao = await _montar_embed_ficha(militar, ficha)
 
         if mostrar_botao:
             view = VerTodasFormacoesView(militar["id"], militar["roblox_username"])
@@ -321,6 +294,9 @@ class Ficha(commands.Cog):
 
         await db.upsert_ficha(militar_id, campos)
         ficha = await db.buscar_ficha(militar_id)
+        # re-busca o militar pra pegar roblox_id/username já resolvidos
+        # (importante no caso de ter acabado de ser criado acima)
+        militar = await db.buscar_militar_por_username(roblox_username)
 
         canal = self.bot.get_channel(config.CHANNEL_ID_FICHAS)
         if canal is None:
@@ -331,7 +307,7 @@ class Ficha(commands.Cog):
             )
             return
 
-        embed = _montar_embed_ficha_para_forum(roblox_username, ficha)
+        embed, _, _ = await _montar_embed_ficha(militar, ficha)
 
         # se já tiver uma thread salva de uma vez anterior, tenta reaproveitar
         # (edita o post existente) em vez de criar uma duplicada
@@ -475,16 +451,25 @@ class Ficha(commands.Cog):
             )
             return
 
-        importadas, incompletas, puladas = 0, 0, 0
+        importadas, incompletas, puladas, geradas_pelo_bot = 0, 0, 0, 0
         async for thread in canal.archived_threads(limit=None):
-            importadas, incompletas, puladas = await self._importar_thread(thread, importadas, incompletas, puladas)
+            importadas, incompletas, puladas, geradas_pelo_bot = await self._importar_thread(
+                thread, importadas, incompletas, puladas, geradas_pelo_bot
+            )
         for thread in canal.threads:
-            importadas, incompletas, puladas = await self._importar_thread(thread, importadas, incompletas, puladas)
+            importadas, incompletas, puladas, geradas_pelo_bot = await self._importar_thread(
+                thread, importadas, incompletas, puladas, geradas_pelo_bot
+            )
 
         mensagem = (
             f"Importação concluída: {importadas} fichas processadas, {incompletas} marcadas como incompletas "
             f"(faltando campos — precisam de revisão manual)."
         )
+        if geradas_pelo_bot:
+            mensagem += (
+                f"\n{geradas_pelo_bot} thread(s) ignorada(s) por já terem sido geradas pelo próprio bot "
+                f"(`/ficha criar`) — o banco já é a fonte de verdade pra elas, não precisam ser relidas."
+            )
         if puladas:
             mensagem += (
                 f"\n⚠️ {puladas} thread(s) pulada(s) — primeira mensagem sem texto e sem embed legível "
@@ -511,17 +496,26 @@ class Ficha(commands.Cog):
                     partes.append(field.value)
         return "\n".join(partes)
 
-    async def _importar_thread(self, thread: discord.Thread, importadas: int, incompletas: int, puladas: int = 0):
+    async def _importar_thread(
+        self, thread: discord.Thread, importadas: int, incompletas: int, puladas: int = 0, geradas_pelo_bot: int = 0
+    ):
         primeira_msg = None
         async for msg in thread.history(limit=1, oldest_first=True):
             primeira_msg = msg
         if primeira_msg is None:
-            return importadas, incompletas, puladas
+            return importadas, incompletas, puladas, geradas_pelo_bot
+
+        if primeira_msg.author.id == self.bot.user.id:
+            # post gerado pelo próprio bot via `/ficha criar` — o banco já é
+            # a fonte de verdade pra essa ficha, não precisa reler por regex
+            # (e evita sobrescrever a ficha com o que o próprio bot postou)
+            geradas_pelo_bot += 1
+            return importadas, incompletas, puladas, geradas_pelo_bot
 
         texto = self._extrair_texto_mensagem(primeira_msg)
         if not texto:
             puladas += 1
-            return importadas, incompletas, puladas
+            return importadas, incompletas, puladas, geradas_pelo_bot
 
         # o nome do militar normalmente é o título da thread ou a primeira
         # linha em negrito/link do corpo — aqui usamos o título da thread.
@@ -541,7 +535,7 @@ class Ficha(commands.Cog):
         importadas += 1
         if not campos.get("ficha_completa"):
             incompletas += 1
-        return importadas, incompletas, puladas
+        return importadas, incompletas, puladas, geradas_pelo_bot
 
 
 async def setup(bot: commands.Bot):
